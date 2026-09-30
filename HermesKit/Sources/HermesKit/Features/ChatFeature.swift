@@ -1124,13 +1124,9 @@ public struct ChatFeature {
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
         // slash panel until the first foreground re-hydrate.
-        let catalog = commandCatalogEffect(state, sessionID: handle.sessionID)
-        if state.pendingCanonicalIntro {
-          state.pendingCanonicalIntro = false
-          state.composerText = CanonicalBotChat.introPrompt
-          return .merge(catalog, .send(.composerSubmitted))
-        }
-        return catalog
+        // Bot Mode never auto-submits an intro/kickoff — mint stays empty; user speaks first.
+        state.pendingCanonicalIntro = false
+        return commandCatalogEffect(state, sessionID: handle.sessionID)
 
       case let .usageResponse(usage):
         state.usage = usage

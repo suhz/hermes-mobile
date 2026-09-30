@@ -21,16 +21,20 @@ Mobile stays a thin remote client.
 ## Protocol assumptions
 
 Desktop resolves via gateway `session.list { title: "Bot Chat", include_hidden: true, profile }`.
-Mobile has **no standing WebSocket** outside `ChatFeature`, so the registry is REST:
+Mobile mirrors that RPC on a **short-lived** WebSocket (a separate `HermesGatewayClient`
+instance — never the chat slot's shared socket):
 
-1. `GET /api/profiles/sessions?profile=&include_hidden=true` (paged, cap 500).
-2. On 400/404/405, fall back to the visible list and mark `includeHiddenSupported = false`.
-3. Exact title match → **adopt** (`session.resume` through `ChatFeature`).
-4. Successful hidden list + no match → **mint** (`session.create` with `title: "Bot Chat"`,
-   `hidden: true`, plus an optional intro `prompt.submit`).
-5. Visible-only list + no match → **fail closed** (`cannotVerifyUniqueness`), except right
-   after `profiles.create` (no Bot Chat can exist yet).
-6. Any lookup transport/HTTP failure → **fail closed**. Never mint a second Bot Chat.
+1. Connect → wait for `gateway.ready` → `session.list` with exact `title: "Bot Chat"`,
+   `include_hidden: true`, and the tapped `profile` (including `"default"`).
+2. Exact-title match → **adopt** (`session.resume` on `resolved_id` / tip when present).
+3. Successful list + no match → **mint** (`session.create` with `title: "Bot Chat"`,
+   `hidden: true`) — **no intro / kickoff prompt**. The user speaks first.
+4. Any lookup transport/RPC failure → **fail closed**. Never mint a second Bot Chat.
+
+REST `GET /api/profiles/sessions?include_hidden=true` is **not** the registry: the dashboard
+endpoint ignores `include_hidden` / `title` and returns only visible rows, which made an
+empty success look like "no Bot Chat" and forked a second forever-chat. Do not reintroduce
+that path.
 
 If `session.create` rejects `hidden`, the mint retries once without it.
 
@@ -39,9 +43,9 @@ SOUL.md only — we never append teammate-messaging protocol text.
 
 ## Known gaps / deferred
 
-- Gateway `session.list` / `profiles.list` (canonical_session, ui_meta) — unused; REST only.
-- Title-filter query on REST (we scan pages instead). Hidden Bot Chats older than the 500-row
-  cap would be missed.
+- Gateway `profiles.list` (`canonical_session`, `ui_meta`) — unused; open still uses title RPC.
+- REST title/`include_hidden` on `/api/profiles/sessions` — still absent server-side; mobile
+  does not depend on it.
 - Group chats / multi-round orchestration.
 - Cross-connection `bot_relay` / Desktop-as-router.
 - Multi-slot sockets (#90).

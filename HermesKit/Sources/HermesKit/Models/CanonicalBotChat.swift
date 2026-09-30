@@ -10,7 +10,9 @@ public enum CanonicalBotChat: Sendable {
   /// Exact session title the desktop plugin uses (`CANONICAL_CHAT_TITLE`).
   public static let title = "Bot Chat"
 
-  /// Optional one-shot kickoff sent after a successful mint (desktop create path).
+  /// Desktop's New-Agent kickoff string — **not** sent by mobile. Mint opens an empty
+  /// forever-chat; the user speaks first. Kept only so older tests/docs that mention the
+  /// literal still compile against a single source.
   public static let introPrompt = "Hey, tell me about yourself!"
 
   /// True when `session.title` is exactly ``title`` (no trimming, no `"Untitled"` fallback).

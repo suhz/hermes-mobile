@@ -786,7 +786,7 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
-  @Test func canonicalMintSendsIntroAfterCreate() async {
+  @Test func canonicalMintNeverSendsIntroAfterCreate() async {
     var state = ChatFeature.State(
       connection: conn,
       title: CanonicalBotChat.title,
@@ -804,11 +804,13 @@ struct ChatReductionTests {
       $0.continuousClock = ImmediateClock()
       $0.date = .constant(Date(timeIntervalSince1970: 0))
       $0.chatSnapshot = .inMemory()
-      $0.hermesGateway.send = { @Sendable _, _ in
-        .object([
+      $0.hermesGateway.send = { @Sendable method, _ in
+        #expect(method != "prompt.submit", "Bot Chat mint must not kick off an intro turn")
+        return .object([
           "session_id": .string("live-bot"),
           "stored_session_id": .string("stored-bot"),
           "message_count": .number(0),
+          "commands": .array([]),
         ])
       }
     }
@@ -816,11 +818,14 @@ struct ChatReductionTests {
 
     await store.send(.sessionResult(.success(.init(
       sessionID: "live-bot", storedSessionID: "stored-bot", messageCount: 0
-    ))))
-    #expect(store.state.pendingCanonicalIntro == false)
-    #expect(store.state.composerText == CanonicalBotChat.introPrompt)
-    await store.receive(\.composerSubmitted)
-    await store.skipReceivedActions()
+    )))) {
+      $0.liveSessionID = "live-bot"
+      $0.storedSessionID = "stored-bot"
+      $0.hasHydrated = true
+      $0.pendingCanonicalIntro = false
+    }
+    #expect(store.state.composerText.isEmpty)
+    #expect(!store.state.composerText.contains(CanonicalBotChat.introPrompt))
   }
 
   @Test func createUnderCustomProfileThreadsProfileParam() async {

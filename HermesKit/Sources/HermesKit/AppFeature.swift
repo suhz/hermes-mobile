@@ -633,7 +633,7 @@ public struct AppFeature {
           title: CanonicalBotChat.title,
           canonicalCreateTitle: CanonicalBotChat.title,
           createHidden: true,
-          sendCanonicalIntro: true
+          sendCanonicalIntro: false
         )
         guard state.liveChat != nil else {
           seatLiveChat(chat, into: &state)

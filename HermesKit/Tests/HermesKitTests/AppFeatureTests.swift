@@ -270,7 +270,7 @@ struct AppFeatureTests {
         title: CanonicalBotChat.title,
         canonicalCreateTitle: CanonicalBotChat.title,
         createHidden: true,
-        sendCanonicalIntro: true
+        sendCanonicalIntro: false
       )
       $0.path.append(ChatScreen.State(sessionKey: nil))
     }

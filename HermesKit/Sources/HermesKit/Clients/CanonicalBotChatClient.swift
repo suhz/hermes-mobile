@@ -4,40 +4,38 @@ import Foundation
 
 /// Profile-scoped registry lookup for the canonical `"Bot Chat"` session.
 ///
-/// Desktop uses gateway `session.list { title, include_hidden, profile }`. Mobile has no
-/// standing socket outside `ChatFeature`, so the live path is REST
-/// `GET /api/profiles/sessions` with `include_hidden=true` when the agent accepts it,
-/// falling back to the visible list (capability-gated). A thrown error is fail-closed:
-/// the caller must not mint.
+/// Desktop resolves via gateway `session.list { title, include_hidden, profile }` —
+/// an exact-title, window-free read that finds the hidden forever-chat. Mobile has no
+/// standing socket outside `ChatFeature`, so the live path opens a **short-lived**
+/// gateway connection (a separate `HermesGatewayClient` instance — never the chat
+/// slot's shared dependency), runs the same RPC, and disconnects.
+///
+/// REST `GET /api/profiles/sessions?include_hidden=true` is **not** used: the dashboard
+/// endpoint ignores `include_hidden` / `title`, silently returns only visible rows, and
+/// would make a successful empty list look like "no Bot Chat" → minting a fork.
 @DependencyClient
 public struct CanonicalBotChatClient: Sendable {
-  /// List sessions for `profile` (literal name, including `"default"`). Throws on any
-  /// transport/HTTP/decode failure — never returns a partial/empty list in that case.
+  /// Exact-title registry lookup for `profile` (literal name, including `"default"`).
+  /// Throws on any transport/RPC failure — never returns a partial/empty list in that
+  /// case (callers must not mint).
   public var lookup: @Sendable (_ connection: ServerConnection, _ profile: String) async throws -> CanonicalBotChatLookup
 }
 
 public extension CanonicalBotChatClient {
-  /// Live lookup over profile-scoped REST. Tries `include_hidden=true` first; a 400/404/405
-  /// falls back to the visible list and marks `includeHiddenSupported = false`.
+  /// Live lookup over gateway `session.list` with `title: "Bot Chat"`.
   ///
-  /// When `profiles` is omitted, the live client reads ``DependencyValues/hermesProfiles``
-  /// so DemoMode / tests that override that client are honored (never a second URLSession).
-  static func live(profiles: HermesProfileClient? = nil) -> CanonicalBotChatClient {
+  /// `gatewayFactory` builds an **ephemeral** client so this never steals
+  /// `ChatFeature`'s shared `hermesGateway` socket. Tests inject a stub factory.
+  static func live(
+    gatewayFactory: @escaping @Sendable () -> HermesGatewayClient = { .live() }
+  ) -> CanonicalBotChatClient {
     CanonicalBotChatClient(
       lookup: { connection, profile in
-        @Dependency(\.hermesProfiles) var injected
-        let profiles = profiles ?? injected
-        do {
-          let sessions = try await listPages(
-            profiles: profiles, connection: connection, profile: profile, includeHidden: true
-          )
-          return CanonicalBotChatLookup(sessions: sessions, includeHiddenSupported: true)
-        } catch let error as RESTError where isIncludeHiddenUnsupported(error) {
-          let sessions = try await listPages(
-            profiles: profiles, connection: connection, profile: profile, includeHidden: false
-          )
-          return CanonicalBotChatLookup(sessions: sessions, includeHiddenSupported: false)
-        }
+        try await lookupViaGateway(
+          connection: connection,
+          profile: profile,
+          gateway: gatewayFactory()
+        )
       }
     )
   }
@@ -62,41 +60,97 @@ public extension DependencyValues {
   }
 }
 
-/// Page through the profile session list looking for the registry row. Cap is a safety
-/// bound (no server-side title index on older agents); a Bot Chat older than the cap
-/// would be missed — documented in the Bot Mode plan.
-private func listPages(
-  profiles: HermesProfileClient,
+// MARK: - Gateway one-shot
+
+private func lookupViaGateway(
   connection: ServerConnection,
   profile: String,
-  includeHidden: Bool
-) async throws -> [Session] {
-  var all: [Session] = []
-  var offset = 0
-  let pageSize = 100
-  let cap = 500
-  while all.count < cap {
-    let page: [Session]
-    if includeHidden {
-      page = try await profiles.sessionsIncludingHidden(
-        connection, profile, .exclude, .recent, pageSize, offset
-      )
-    } else {
-      page = try await profiles.sessions(
-        connection, profile, .exclude, .recent, pageSize, offset
-      )
+  gateway: HermesGatewayClient
+) async throws -> CanonicalBotChatLookup {
+  try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<CanonicalBotChatLookup, any Error>) in
+    let settled = LockIsolated(false)
+    let finish: @Sendable (Result<CanonicalBotChatLookup, any Error>) -> Void = { result in
+      let alreadyResumed = settled.withValue { flag -> Bool in
+        defer { flag = true }
+        return flag
+      }
+      guard !alreadyResumed else { return }
+      gateway.disconnect()
+      continuation.resume(with: result)
     }
-    all.append(contentsOf: page)
-    if page.count < pageSize { break }
-    offset += pageSize
+
+    Task {
+      var sawReady = false
+      for await event in gateway.connect(connection.baseURL, connection.auth) {
+        switch event {
+        case .ready:
+          sawReady = true
+          do {
+            let lookup = try await sessionListBotChat(gateway: gateway, profile: profile)
+            finish(.success(lookup))
+          } catch {
+            finish(.failure(error))
+          }
+          return
+        case .authExpired:
+          finish(.failure(GatewayError.authExpired))
+          return
+        default:
+          continue
+        }
+      }
+      if !sawReady {
+        finish(.failure(GatewayError.disconnected))
+      }
+    }
   }
-  return all
 }
 
-/// Query-param / verb the agent doesn't know. 400 covers "unknown query"; 404/405 is the
-/// shared missing-endpoint verdict.
-private func isIncludeHiddenUnsupported(_ error: RESTError) -> Bool {
-  if error.isMissingEndpointVerdict { return true }
-  if case .server(status: 400, _) = error { return true }
-  return false
+private func sessionListBotChat(
+  gateway: HermesGatewayClient,
+  profile: String
+) async throws -> CanonicalBotChatLookup {
+  // Exact-title path is window-free and resolves hidden rows (desktop contract).
+  // Always pass `profile` so the gateway opens that profile's state.db — omitting it
+  // would search the default store and miss arif/bob/nadi forever-chats.
+  let params: JSONValue = .object([
+    "title": .string(CanonicalBotChat.title),
+    "include_hidden": .bool(true),
+    "limit": .number(200),
+    "profile": .string(profile),
+  ])
+  let result = try await gateway.send("session.list", params)
+  let sessions = decodeGatewaySessions(result)
+  // Title lookup finds hidden rows by design — treat as include_hidden-capable so a
+  // confirmed miss may mint; a thrown error above stays fail-closed.
+  return CanonicalBotChatLookup(sessions: sessions, includeHiddenSupported: true)
+}
+
+/// Decode `session.list` rows. Prefer `resolved_id` (compression tip) as `Session.id` so
+/// `session.resume` opens the live tip — same as desktop `openStoredBotChat`.
+private func decodeGatewaySessions(_ result: JSONValue) -> [Session] {
+  guard case let .object(root) = result,
+        case let .array(rows) = root["sessions"]
+  else { return [] }
+
+  return rows.compactMap { row -> Session? in
+    guard case let .object(fields) = row,
+          let registryID = fields["id"]?.stringValue?.trimmedNonEmpty
+    else { return nil }
+    let tip = fields["resolved_id"]?.stringValue?.trimmedNonEmpty
+    let openID = tip ?? registryID
+    let title = fields["title"]?.stringValue
+    let messageCount: Int?
+    if case let .number(n) = fields["message_count"] {
+      messageCount = Int(n)
+    } else {
+      messageCount = nil
+    }
+    return Session(
+      id: openID,
+      title: title,
+      messageCount: messageCount,
+      lineageRootID: openID == registryID ? nil : registryID
+    )
+  }
 }
