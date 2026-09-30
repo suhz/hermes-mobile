@@ -58,7 +58,9 @@ AppFeature                 // root nav + launch auto-connect; onboarding until c
 │  │                       //   payload and the PARENT list runs the DELETE round-trip (a
 │  │                       //   presented sheet's effects die on dismissal); `deleteUnsupported`
 │  │                       //   mirrors the capability flag
-│  └─ AddProfileFeature    // create-then-PUT-soul; inline name validation + server-400 banner
+│  ├─ AddProfileFeature    // create-then-PUT-soul; inline name validation + server-400 banner
+│  └─ BotRosterFeature     // Bot Mode roster (a bot = a profile); tap → adopt-or-mint
+│                          //   canonical "Bot Chat"; create reuses AddProfileFeature
 ├─ ChatScreen              // navigation-path marker ONLY (session key, no behavior) — pushing/
 │                          //   popping it never creates or destroys chat state; COMPACT-ONLY
 │                          //   (in regular the slot is the detail column, the path stays empty)
@@ -83,7 +85,11 @@ a `testValue`/`.inMemory()` variant):
   reads/mutations take an optional `profile` (omitted for default).
 - **`HermesProfileClient`** — profile CRUD + SOUL.md (`PUT /api/profiles/{name}/soul`) +
   profile-scoped session lists (`GET /api/profiles/sessions?profile=`). Capability-gated: a
-  404 from `GET /api/profiles` hides the selector.
+  404 from `GET /api/profiles` hides the selector. `sessionsIncludingHidden` adds
+  `include_hidden=true` for the Bot Chat registry lookup.
+- **`CanonicalBotChatClient`** — profile-scoped REST lookup for the canonical `"Bot Chat"`
+  session (desktop identity: profile + exact title). Fail-closed: a thrown lookup never
+  mints. See `docs/plans/20260930-bot-mode-mvp.md`.
 - **`HermesGatewayClient`** — WebSocket JSON-RPC connect/send. The socket is one
   long-running cancellable effect; reconnect/backoff lives in the reducer (testable
   with `TestClock`). Each `send` enforces a per-request timeout (default 30s) so a

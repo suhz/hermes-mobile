@@ -241,8 +241,8 @@ public struct ChatFeature {
     /// `storedSessionID == nil` — the handle carries a `stored_session_id` the moment the
     /// socket is ready, so the id alone stops telling a fresh seat from a resumed session.
     public var isUnpromptedNewChat: Bool {
-      !resumesStoredSession && attachLiveSessionID == nil && branchSeed == nil
-        && transcript.isEmpty && !isSending && !hasQueuedWork
+      !resumesStoredSession && canonicalCreateTitle == nil && attachLiveSessionID == nil
+        && branchSeed == nil && transcript.isEmpty && !isSending && !hasQueuedWork
     }
 
     /// Nothing typed, staged, sent, or still arriving — an `isDiscardableNewChat` with an
@@ -491,6 +491,15 @@ public struct ChatFeature {
     /// per-slot lifetime, unpersisted. Only `showsEmptyHero` reads it: "the transcript is
     /// empty because the server said so" vs "empty because history hasn't arrived yet".
     var hasHydrated: Bool
+    /// When set, a fresh `session.create` sends this exact title (Bot Mode mint). Also
+    /// keeps the seat out of `isUnpromptedNewChat` so a regular-width profile reseat
+    /// cannot replace a just-minted Bot Chat with a blank new-chat seat.
+    var canonicalCreateTitle: String?
+    /// Send `hidden: true` on the canonical mint. Flipped off after one create failure
+    /// so we retry without it (older agents that reject the field).
+    var createHidden: Bool
+    /// One-shot intro `prompt.submit` after a successful canonical mint.
+    var pendingCanonicalIntro: Bool
 
     public enum Status: Equatable, Sendable {
       case connecting
@@ -514,13 +523,19 @@ public struct ChatFeature {
       title: String? = nil,
       transcript: IdentifiedArrayOf<ChatRow> = [],
       composerText: String = "",
-      status: Status = .connecting
+      status: Status = .connecting,
+      canonicalCreateTitle: String? = nil,
+      createHidden: Bool = false,
+      sendCanonicalIntro: Bool = false
     ) {
       self.connection = connection
       self.profileName = profileName
       self.storedSessionID = resumeStoredID
       self.resumesStoredSession = resumeStoredID != nil
       self.title = title
+      self.canonicalCreateTitle = canonicalCreateTitle
+      self.createHidden = createHidden
+      self.pendingCanonicalIntro = sendCanonicalIntro
       self.transcript = transcript
       self.composerText = composerText
       self.status = status
@@ -1109,7 +1124,13 @@ public struct ChatFeature {
         // A fresh session never hydrates (`session.create` resolves directly to ready), so
         // this is its catalog-fetch point (#36) — without it a brand-new chat would have no
         // slash panel until the first foreground re-hydrate.
-        return commandCatalogEffect(state, sessionID: handle.sessionID)
+        let catalog = commandCatalogEffect(state, sessionID: handle.sessionID)
+        if state.pendingCanonicalIntro {
+          state.pendingCanonicalIntro = false
+          state.composerText = CanonicalBotChat.introPrompt
+          return .merge(catalog, .send(.composerSubmitted))
+        }
+        return catalog
 
       case let .usageResponse(usage):
         state.usage = usage
@@ -1121,9 +1142,19 @@ public struct ChatFeature {
         // only real protocol/server failures.
         if error.isDisconnected {
           state.status = .reconnecting
-        } else {
-          state.errorBanner = error.message
+          return .none
         }
+        // Older agents may reject `hidden` on `session.create` — retry the mint once
+        // without it rather than leaving the user on a failed Bot Chat seat.
+        if state.createHidden, state.canonicalCreateTitle != nil, !error.isTimedOut {
+          state.createHidden = false
+          return createSession(
+            profile: state.scopedProfile,
+            title: state.canonicalCreateTitle,
+            hidden: false
+          )
+        }
+        state.errorBanner = error.message
         return .none
 
       case let .activateResult(.success(response)):
@@ -2196,7 +2227,11 @@ public struct ChatFeature {
         state.errorBanner = "Couldn’t restore the branch — starting a fresh chat."
         state.branchSeed = nil
       }
-      return createSession(profile: state.scopedProfile)
+      return createSession(
+        profile: state.scopedProfile,
+        title: state.canonicalCreateTitle,
+        hidden: state.createHidden
+      )
 
     case .messageStart:
       // Defer creating the assistant row until the first delta — a tool-only turn emits
@@ -2595,10 +2630,18 @@ public struct ChatFeature {
   /// Create a brand-new session (`session.create`). New sessions send no title so the
   /// server auto-names from the first message (passing any title disables Hermes'
   /// auto-title generation). The default/nil profile is omitted → byte-identical to the
-  /// single-profile request.
-  private func createSession(profile: String?) -> Effect<Action> {
+  /// single-profile request. Bot Mode mint passes ``title`` (exactly `"Bot Chat"`) and
+  /// optionally `hidden`.
+  private func createSession(
+    profile: String?,
+    title: String? = nil,
+    hidden: Bool = false
+  ) -> Effect<Action> {
     .run { [gateway] send in
-      await send(.sessionResult(createSessionRPC(fields: [:], profile: profile, gateway: gateway)))
+      var fields: [String: JSONValue] = [:]
+      if let title { fields["title"] = .string(title) }
+      if hidden { fields["hidden"] = .bool(true) }
+      await send(.sessionResult(createSessionRPC(fields: fields, profile: profile, gateway: gateway)))
     }
   }
 

@@ -53,6 +53,30 @@ struct ProfileTests {
     #expect(profile.hasEnv == false)
   }
 
+  @Test func decodesBotModeFieldsLeniently() throws {
+    let profile = try decode(
+      """
+      {
+        "name": "arif",
+        "display_name": "Arif",
+        "description": "Ops buddy",
+        "bot_mode_protocol": true
+      }
+      """
+    )
+    #expect(profile.displayName == "Arif")
+    #expect(profile.description == "Ops buddy")
+    #expect(profile.botModeProtocol == true)
+    #expect(profile.rosterTitle == "Arif")
+  }
+
+  @Test func rosterTitleFallsBackToName() throws {
+    let profile = try decode(#"{ "name": "nadi" }"#)
+    #expect(profile.rosterTitle == "nadi")
+    #expect(profile.botModeProtocol == false)
+    #expect(profile.displayName == nil)
+  }
+
   @Test func decodesWithMissingOptionalsSucceeds() throws {
     let profile = try decode(
       """

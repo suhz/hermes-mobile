@@ -131,6 +131,11 @@ public struct SessionListFeature {
     public var archivedSheetGeneration: Int = 0
     @Presents public var addProfile: AddProfileFeature.State?
     @Presents public var confirmationDialog: ConfirmationDialogState<Action.Dialog>?
+    /// Sessions list vs Bot Mode roster. In-memory only; Bots is hidden when the agent
+    /// lacks `/api/profiles`.
+    public var homeMode: HomeMode
+    /// Bot Mode roster (profiles as bots). Always mounted so mode switches keep state.
+    public var bots: BotRosterFeature.State
 
     /// The default profile name — never renamable/deletable, and the implicit fallback.
     public static let defaultProfileName = "default"
@@ -178,7 +183,9 @@ public struct SessionListFeature {
       cronActionInFlightIDs: Set<String> = [],
       copiedIDToastToken: Int? = nil,
       settings: SettingsFeature.State? = nil,
-      addProfile: AddProfileFeature.State? = nil
+      addProfile: AddProfileFeature.State? = nil,
+      homeMode: HomeMode = .sessions,
+      bots: BotRosterFeature.State? = nil
     ) {
       self.connection = connection
       self.sessions = sessions
@@ -212,6 +219,8 @@ public struct SessionListFeature {
       self.copiedIDToastToken = copiedIDToastToken
       self.settings = settings
       self.addProfile = addProfile
+      self.homeMode = homeMode
+      self.bots = bots ?? BotRosterFeature.State(connection: connection)
     }
 
     /// Whether the currently-selected profile is the default (no `?profile=` scoping for
@@ -250,9 +259,21 @@ public struct SessionListFeature {
 
     /// The non-cron remainder — everything the pinning/workspace/chronological computeds
     /// operate on, so cron sessions never feed the interactive sections (a pinned-but-cron
-    /// id surfaces only under Cron Jobs).
+    /// id surfaces only under Cron Jobs). Canonical `"Bot Chat"` rows are hidden when
+    /// Bot Mode is the door (`profilesSupported`) — the roster opens them.
     public var interactiveSessions: [Session] {
-      sessions.filter { !$0.isCron }
+      sessions.filter { !$0.isCron && !hidesCanonicalBotChat($0) }
+    }
+
+    /// Search results with canonical Bot Chats dropped when Bot Mode is available.
+    public var visibleSearchSessions: [Session] {
+      sessions.filter { !hidesCanonicalBotChat($0) }
+    }
+
+    /// Hide `"Bot Chat"` from the Sessions list (and search) when the agent has profiles
+    /// — Bot Mode is then the door. Older agents keep the row visible.
+    public func hidesCanonicalBotChat(_ session: Session) -> Bool {
+      profilesSupported && CanonicalBotChat.matches(session)
     }
 
     /// Runs shown in a job's inline peek — enough to glance at history without turning the
@@ -318,7 +339,11 @@ public struct SessionListFeature {
     /// Pinned sessions resolved from `pinnedIDs`, in pin order; stale ids are dropped. Cron
     /// sessions are excluded (they belong to the Cron Jobs section), even if pinned.
     public var pinnedSessions: [Session] {
-      pinnedIDs.compactMap { id in sessions[id: id].flatMap { $0.isCron ? nil : $0 } }
+      pinnedIDs.compactMap { id in
+        sessions[id: id].flatMap { session in
+          (session.isCron || hidesCanonicalBotChat(session)) ? nil : session
+        }
+      }
     }
 
     /// The Pinned lane's rows with branch nesting applied WITHIN the pinned slice: a branch
@@ -477,6 +502,9 @@ public struct SessionListFeature {
     /// Open the Add-profile sheet.
     case addProfileTapped
     case addProfile(PresentationAction<AddProfileFeature.Action>)
+    /// Switch the home sidebar between Sessions and Bots (no-op when profiles are unsupported).
+    case setHomeMode(HomeMode)
+    case bots(BotRosterFeature.Action)
     /// Open the rename alert for a custom profile: seeds `profileRenameDraft` with its name.
     case renameProfileTapped(name: String)
     /// Commit the profile rename from the alert (sends the entered draft as `newName`).
@@ -577,6 +605,10 @@ public struct SessionListFeature {
       /// still pending on the server and nothing short of a fresh push would repopulate
       /// the entry.
       case sessionDeleteSucceeded(id: Session.ID)
+      /// Resume an existing canonical Bot Chat under `profileName` (device-local scope).
+      case openBotChat(session: Session, profileName: String)
+      /// Mint a canonical Bot Chat — `ChatFeature` sends `session.create` titled `"Bot Chat"`.
+      case mintBotChat(profileName: String)
     }
   }
 
@@ -1285,11 +1317,21 @@ public struct SessionListFeature {
         // A 404 (old agent) or any failure → behave as today: no scoping, unscoped fetch.
         state.profilesSupported = false
         state.profiles = []
+        state.homeMode = .sessions
         return load(&state)
 
       case let .profilesRefreshed(result):
         state.profilesSupported = true
         state.profiles = Self.dedupedProfiles(result)
+        return .none
+
+      case let .setHomeMode(mode):
+        guard state.profilesSupported || mode == .sessions else { return .none }
+        state.homeMode = mode
+        if mode == .bots {
+          state.bots.connection = state.connection
+          state.bots.profiles = state.profiles
+        }
         return .none
 
       case let .selectProfile(name):
@@ -1313,13 +1355,18 @@ public struct SessionListFeature {
       case let .addProfile(.presented(.delegate(.created(name)))):
         // Dismiss the sheet, refresh the profile list (no fetch), THEN select the new profile
         // (which does the single scoped fetch). Sequential so the refreshed list is in place
-        // before the switch, and avoids a redundant double fetch.
+        // before the switch, and avoids a redundant double fetch. From Bots, also open/create
+        // that profile's canonical Bot Chat (mint-without-hidden is safe — we just created it).
         state.addProfile = nil
+        let openBot = state.homeMode == .bots
         return .run { [profiles, connection = state.connection] send in
           if let result = try? await profiles.list(connection) {
             await send(.profilesRefreshed(result))
           }
           await send(.selectProfile(name: name))
+          if openBot {
+            await send(.bots(.openCreatedBot(name: name)))
+          }
         }
 
       case .addProfile:
@@ -1416,8 +1463,33 @@ public struct SessionListFeature {
         state.loadError = "Couldn’t delete the profile."
         return .none
 
+      case let .bots(.delegate(.openBotChat(session, profileName))):
+        let select: Effect<Action> = profileName == state.selectedProfileName
+          ? .none
+          : .send(.selectProfile(name: profileName))
+        return .concatenate(
+          select,
+          .send(.delegate(.openBotChat(session: session, profileName: profileName)))
+        )
+
+      case let .bots(.delegate(.mintBotChat(profileName))):
+        let select: Effect<Action> = profileName == state.selectedProfileName
+          ? .none
+          : .send(.selectProfile(name: profileName))
+        return .concatenate(
+          select,
+          .send(.delegate(.mintBotChat(profileName: profileName)))
+        )
+
+      case .bots(.delegate(.addBot)):
+        return .send(.addProfileTapped)
+
+      case .bots:
+        return .none
+
       case let .settings(.presented(.delegate(.tokenSaved(token)))):
         state.connection.token = token
+        state.bots.connection = state.connection
         return .none
 
       case .settings(.presented(.delegate(.disconnect))):
@@ -1457,6 +1529,9 @@ public struct SessionListFeature {
       AddProfileFeature()
     }
     .ifLet(\.$confirmationDialog, action: \.confirmationDialog)
+    Scope(state: \.bots, action: \.bots) {
+      BotRosterFeature()
+    }
   }
 
   /// Refresh "now", clear errors, and reload the non-secret persisted prefs (seen counts,

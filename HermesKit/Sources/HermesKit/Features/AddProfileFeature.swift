@@ -6,10 +6,11 @@ import Foundation
 /// "clone from default" toggle, and an optional SOUL.md body.
 ///
 /// Creating is a two-call sequence (matching the desktop): `profiles.create` then, when
-/// the SOUL.md text is non-blank, `profiles.updateSoul`. On success it emits
-/// `.delegate(.created(name:))` so the parent can refresh and select the new profile; on
-/// failure it surfaces the `RESTError.message` (a server 400 detail verbatim) in an
-/// inline error banner.
+/// the SOUL.md text is non-blank, `profiles.updateSoul`. The body is the user's text
+/// only — never append teammate-messaging protocol (`bot_mode_protocol` backends inject
+/// it themselves). On success it emits `.delegate(.created(name:))` so the parent can
+/// refresh and select the new profile; on failure it surfaces the `RESTError.message`
+/// (a server 400 detail verbatim) in an inline error banner.
 @Reducer
 public struct AddProfileFeature {
   @ObservableState

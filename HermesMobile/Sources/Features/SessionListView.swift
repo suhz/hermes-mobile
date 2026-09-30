@@ -16,26 +16,11 @@ struct SessionListView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    List {
-      if let error = store.loadError {
-        Label(error, systemImage: "exclamationmark.triangle")
-          .foregroundStyle(.red)
-          .listRowSeparator(.hidden)
-      }
-      if store.isSearching {
-        // Search results are flat, with the matching snippet shown.
-        ForEach(store.sessions) { session in
-          row(session, showsPreview: true)
-        }
+    Group {
+      if store.homeMode == .bots, store.profilesSupported {
+        botsHome
       } else {
-        sessionListContent
-      }
-    }
-    .listStyle(.plain)
-    .listSectionSeparator(.hidden) // flat list — no section hairlines (row hairlines hidden per-row)
-    .overlay {
-      if store.sessions.isEmpty, !store.isLoading, store.loadError == nil {
-        ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right")
+        sessionsHome
       }
     }
     // Applied BEFORE the bottom `safeAreaInset` so the toast floats inside the list area,
@@ -48,8 +33,6 @@ struct SessionListView: View {
     // pill needs the inline bar, so keep the nav title empty + inline in both cases.
     .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
-    .searchable(text: $store.searchQuery, prompt: "Search sessions")
-    .refreshable { store.send(.pulledToRefresh) }
     .toolbar {
       ToolbarItem(placement: .topBarLeading) {
         Button("Settings", systemImage: "gearshape") {
@@ -65,11 +48,11 @@ struct SessionListView: View {
         organizeMenu
       }
     }
-    // New chat lives at the bottom (Codex-style). A `safeAreaInset` keeps it in the
-    // normal view hierarchy so it sits above the home indicator — and, on iOS 26 where
-    // `.searchable` moves to the bottom, above the search field too.
+    // New chat / add-bot lives at the bottom (Codex-style). A `safeAreaInset` keeps it
+    // in the normal view hierarchy so it sits above the home indicator — and, on iOS 26
+    // where `.searchable` moves to the bottom, above the search field too.
     .safeAreaInset(edge: .bottom) {
-      newChatBar
+      bottomBar
     }
     // `bottomActionSheet`, not `.confirmationDialog`: on iOS 26 the SwiftUI modifier
     // renders as a floating popover (dropping the title and Cancel) wherever it's
@@ -128,6 +111,65 @@ struct SessionListView: View {
         onAskAgent: { store.send(.pushSetupAskAgentTapped) },
         onLater: { store.send(.pushSetupLaterTapped) }
       )
+    }
+  }
+
+  private var sessionsHome: some View {
+    List {
+      homeModePicker
+      if let error = store.loadError {
+        Label(error, systemImage: "exclamationmark.triangle")
+          .foregroundStyle(.red)
+          .listRowSeparator(.hidden)
+      }
+      if store.isSearching {
+        // Search results are flat, with the matching snippet shown. Canonical Bot Chats
+        // are dropped when Bot Mode is the door (`visibleSearchSessions`).
+        ForEach(store.visibleSearchSessions) { session in
+          row(session, showsPreview: true)
+        }
+      } else {
+        sessionListContent
+      }
+    }
+    .listStyle(.plain)
+    .listSectionSeparator(.hidden) // flat list — no section hairlines (row hairlines hidden per-row)
+    .overlay {
+      if store.sessions.isEmpty, !store.isLoading, store.loadError == nil {
+        ContentUnavailableView("No sessions", systemImage: "bubble.left.and.bubble.right")
+      }
+    }
+    .searchable(text: $store.searchQuery, prompt: "Search sessions")
+    .refreshable { store.send(.pulledToRefresh) }
+  }
+
+  private var botsHome: some View {
+    BotRosterView(store: store.scope(state: \.bots, action: \.bots))
+      .safeAreaInset(edge: .top, spacing: 0) {
+        homeModePicker
+          .padding(.horizontal)
+          .padding(.vertical, 8)
+      }
+  }
+
+  /// Sessions | Bots segmented control. Hidden on agents without `/api/profiles`.
+  @ViewBuilder
+  private var homeModePicker: some View {
+    if store.profilesSupported {
+      Picker(
+        "Home",
+        selection: Binding(
+          get: { store.homeMode },
+          set: { store.send(.setHomeMode($0)) }
+        )
+      ) {
+        Text("Sessions").tag(HomeMode.sessions)
+        Text("Bots").tag(HomeMode.bots)
+      }
+      .pickerStyle(.segmented)
+      .listRowSeparator(.hidden)
+      .listRowBackground(Color.clear)
+      .accessibilityLabel("Home mode")
     }
   }
 
@@ -401,23 +443,35 @@ struct SessionListView: View {
       ?? (store.selectedProfileName == SessionListFeature.State.defaultProfileName)
   }
 
-  /// The bottom "new session" button — a trailing circular FAB in the Hermes accent
-  /// (icon-only: it starts a new session, not a chat). Rendered via `safeAreaInset` so the
-  /// list content scrolls clear of it.
-  private var newChatBar: some View {
+  /// The bottom FAB: new session on the Sessions tab, add-bot on the Bots tab.
+  private var bottomBar: some View {
     HStack {
       Spacer()
-      Button {
-        store.send(.newSessionButtonTapped)
-      } label: {
-        Image(systemName: "square.and.pencil")
-          .font(.title2.weight(.semibold))
-          .foregroundStyle(.white)
-          .frame(width: 56, height: 56)
-          .background(Color.hermesAccent, in: Circle())
-          .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+      if store.homeMode == .bots, store.profilesSupported {
+        Button {
+          store.send(.addProfileTapped)
+        } label: {
+          Image(systemName: "plus")
+            .font(.title2.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(width: 56, height: 56)
+            .background(Color.hermesAccent, in: Circle())
+            .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+        }
+        .accessibilityLabel("Add bot")
+      } else {
+        Button {
+          store.send(.newSessionButtonTapped)
+        } label: {
+          Image(systemName: "square.and.pencil")
+            .font(.title2.weight(.semibold))
+            .foregroundStyle(.white)
+            .frame(width: 56, height: 56)
+            .background(Color.hermesAccent, in: Circle())
+            .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+        }
+        .accessibilityLabel("New session")
       }
-      .accessibilityLabel("New session")
     }
     .padding(.horizontal)
     .padding(.vertical, 8)

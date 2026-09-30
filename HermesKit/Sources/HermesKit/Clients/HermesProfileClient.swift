@@ -41,6 +41,16 @@ public struct HermesProfileClient: Sendable {
     _ limit: Int,
     _ offset: Int
   ) async throws -> [Session]
+  /// Same as ``sessions`` plus `include_hidden=true` — the Bot Chat registry lookup.
+  /// Older agents may 400/404 this query; ``CanonicalBotChatClient`` falls back.
+  public var sessionsIncludingHidden: @Sendable (
+    _ connection: ServerConnection,
+    _ profile: String,
+    _ archived: ProfileArchivedFilter,
+    _ order: SessionOrder,
+    _ limit: Int,
+    _ offset: Int
+  ) async throws -> [Session]
 }
 
 public extension HermesProfileClient {
@@ -84,17 +94,18 @@ public extension HermesProfileClient {
         try await send(url, method: "DELETE", body: nil, auth: authFor(conn), session: session)
       },
       sessions: { conn, profile, archived, order, limit, offset in
-        let url = try makeURL(conn.baseURL, "/api/profiles/sessions", query: [
-          .init(name: "profile", value: profile),
-          .init(name: "archived", value: archived.rawValue),
-          .init(name: "order", value: order.rawValue),
-          .init(name: "limit", value: String(limit)),
-          .init(name: "offset", value: String(offset)),
-        ])
-        let response: ProfileSessionsResponse = try await get(
-          url, auth: authFor(conn), session: session
+        try await fetchProfileSessions(
+          conn: conn, profile: profile, archived: archived, order: order,
+          limit: limit, offset: offset, includeHidden: false,
+          auth: authFor(conn), session: session
         )
-        return response.sessions.map(\.asSession)
+      },
+      sessionsIncludingHidden: { conn, profile, archived, order, limit, offset in
+        try await fetchProfileSessions(
+          conn: conn, profile: profile, archived: archived, order: order,
+          limit: limit, offset: offset, includeHidden: true,
+          auth: authFor(conn), session: session
+        )
       }
     )
   }
@@ -126,7 +137,8 @@ public extension HermesProfileClient {
         store.withValue { $0.removeAll { $0.name == name } }
         souls.withValue { $0[name] = nil }
       },
-      sessions: { _, _, _, _, _, _ in [] }
+      sessions: { _, _, _, _, _, _ in [] },
+      sessionsIncludingHidden: { _, _, _, _, _, _ in [] }
     )
   }
 }
@@ -156,4 +168,30 @@ private struct ProfilesResponse: Decodable {
 /// shape as `/api/sessions` (`SessionListDTO`). `profile_totals` is ignored for MVP.
 private struct ProfileSessionsResponse: Decodable {
   let sessions: [SessionListDTO]
+}
+
+private func fetchProfileSessions(
+  conn: ServerConnection,
+  profile: String,
+  archived: ProfileArchivedFilter,
+  order: SessionOrder,
+  limit: Int,
+  offset: Int,
+  includeHidden: Bool,
+  auth: RequestAuth,
+  session: URLSession
+) async throws -> [Session] {
+  var query = [
+    URLQueryItem(name: "profile", value: profile),
+    URLQueryItem(name: "archived", value: archived.rawValue),
+    URLQueryItem(name: "order", value: order.rawValue),
+    URLQueryItem(name: "limit", value: String(limit)),
+    URLQueryItem(name: "offset", value: String(offset)),
+  ]
+  if includeHidden {
+    query.append(URLQueryItem(name: "include_hidden", value: "true"))
+  }
+  let url = try makeURL(conn.baseURL, "/api/profiles/sessions", query: query)
+  let response: ProfileSessionsResponse = try await get(url, auth: auth, session: session)
+  return response.sessions.map(\.asSession)
 }

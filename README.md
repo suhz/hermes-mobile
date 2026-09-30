@@ -44,6 +44,10 @@ away from your desk and still keep your agent moving.
   them from a Safari-style header pill — each profile has its own scoped session list,
   and new chats are created under the selected one. Create custom profiles (with an
   optional SOUL.md) right from the app.
+- **Bot Mode.** A **Bots** tab lists each profile as a bot and opens its canonical
+  **Bot Chat** (the forever-session titled exactly `Bot Chat` — same contract as
+  desktop). Those chats stay out of the normal Sessions list when Bot Mode is the
+  door. Group rooms, relay, and avatars are not in this app.
 - **Watch it work.** Streaming responses render as native Markdown, with tool/skill
   activity rows (tap for args, results, and diffs), a live "Thinking" indicator with an
   elapsed timer that collapses into a reviewable reasoning + status disclosure when the
