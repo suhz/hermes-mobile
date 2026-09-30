@@ -605,6 +605,81 @@ struct SessionListFeatureTests {
     }
   }
 
+  @Test func addProfileInBotsModeOpensCreatedBot() async {
+    var initial = SessionListFeature.State(
+      connection: connection,
+      selectedProfileName: "default",
+      profilesSupported: true,
+      homeMode: .bots
+    )
+    initial.addProfile = AddProfileFeature.State(connection: connection)
+    let lookedUp = LockIsolated(false)
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.preferences = .inMemory()
+      $0.hermesProfiles.list = { @Sendable _ in
+        [Profile(name: "default", isDefault: true), Profile(name: "arif")]
+      }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.canonicalBotChat.lookup = { @Sendable _, profile in
+        lookedUp.setValue(true)
+        #expect(profile == "arif")
+        return CanonicalBotChatLookup(sessions: [], includeHiddenSupported: true)
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.addProfile(.presented(.delegate(.created(name: "arif"))))) {
+      $0.addProfile = nil
+    }
+    await store.skipReceivedActions()
+    #expect(lookedUp.value)
+    #expect(store.state.selectedProfileName == "arif")
+  }
+
+  @Test func addProfileInSessionsModeDoesNotOpenBot() async {
+    var initial = SessionListFeature.State(
+      connection: connection,
+      selectedProfileName: "default",
+      profilesSupported: true,
+      homeMode: .sessions
+    )
+    initial.addProfile = AddProfileFeature.State(connection: connection)
+    let lookedUp = LockIsolated(false)
+    let store = TestStore(initialState: initial) {
+      SessionListFeature()
+    } withDependencies: {
+      $0.date = .constant(now)
+      $0.continuousClock = TestClock()
+      $0.preferences = .inMemory()
+      $0.hermesProfiles.list = { @Sendable _ in
+        [Profile(name: "default", isDefault: true), Profile(name: "arif")]
+      }
+      $0.hermesProfiles.sessions = { @Sendable _, _, _, _, _, _ in [] }
+      $0.hermesREST.sessions = { @Sendable _, _, _, _ in [] }
+      $0.hermesREST.cronJobs = { @Sendable _, _ in throw RESTError.notFound }
+      $0.hermesREST.pushPluginStatus = { @Sendable _ in .unknown }
+      $0.canonicalBotChat.lookup = { @Sendable _, _ in
+        lookedUp.setValue(true)
+        return CanonicalBotChatLookup(sessions: [], includeHiddenSupported: true)
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.addProfile(.presented(.delegate(.created(name: "arif"))))) {
+      $0.addProfile = nil
+    }
+    await store.skipReceivedActions()
+    #expect(lookedUp.value == false)
+    #expect(store.state.selectedProfileName == "arif")
+  }
+
   @Test func noCronSessionsLeavesInteractiveListUnchanged() {
     let sessions = [
       Session(id: "a", updatedAt: Date(timeIntervalSince1970: 10), cwd: "/w", startedAt: Date(timeIntervalSince1970: 1)),

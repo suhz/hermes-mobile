@@ -49,3 +49,5 @@ SOUL.md only — we never append teammate-messaging protocol text.
 - `message_agent` / @mention composer.
 - Routines UI filtered to `[bot:]` cron jobs.
 - Home mode is in-memory (not persisted).
+- DemoMode stubs the Bot Chat registry (no network). A Bots tap in a screenshot
+  scenario seats a mint that never becomes `.ready` (demo socket is inert).

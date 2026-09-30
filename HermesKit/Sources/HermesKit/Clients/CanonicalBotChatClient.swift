@@ -19,9 +19,14 @@ public struct CanonicalBotChatClient: Sendable {
 public extension CanonicalBotChatClient {
   /// Live lookup over profile-scoped REST. Tries `include_hidden=true` first; a 400/404/405
   /// falls back to the visible list and marks `includeHiddenSupported = false`.
-  static func live(profiles: HermesProfileClient = .live()) -> CanonicalBotChatClient {
+  ///
+  /// When `profiles` is omitted, the live client reads ``DependencyValues/hermesProfiles``
+  /// so DemoMode / tests that override that client are honored (never a second URLSession).
+  static func live(profiles: HermesProfileClient? = nil) -> CanonicalBotChatClient {
     CanonicalBotChatClient(
       lookup: { connection, profile in
+        @Dependency(\.hermesProfiles) var injected
+        let profiles = profiles ?? injected
         do {
           let sessions = try await listPages(
             profiles: profiles, connection: connection, profile: profile, includeHidden: true

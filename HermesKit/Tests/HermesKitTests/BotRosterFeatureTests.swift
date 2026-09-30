@@ -41,9 +41,7 @@ struct BotRosterFeatureTests {
     await store.receive(\.openResolved) {
       $0.openingProfileName = nil
     }
-    await store.receive(\.delegate.openBotChat) {
-      // payload asserted via CasePath — session + profile
-    }
+    await store.receive(.delegate(.openBotChat(session: existing, profileName: "arif")))
   }
 
   @Test func tapMintsWhenHiddenListHasNoBotChat() async {

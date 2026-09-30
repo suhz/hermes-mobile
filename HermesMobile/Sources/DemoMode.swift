@@ -50,8 +50,14 @@ enum DemoMode {
     // (`rest.sessions`) and the profile-scoped (`profiles.sessions`) fetch paths.
     deps.hermesREST.sessions = { _, _, _, _ in seededSessions }
     deps.hermesProfiles.sessions = { _, _, _, _, _, _ in seededSessions }
+    deps.hermesProfiles.sessionsIncludingHidden = { _, _, _, _, _, _ in seededSessions }
     // The agent always exposes the default profile, so the "default" pill is always present.
     deps.hermesProfiles.list = { _ in [Profile(name: "default", isDefault: true)] }
+    // Bot Mode registry: no network. Empty + hidden-supported → a Bots tap would mint;
+    // the demo socket never yields `.ready`, so the seated chat stays frozen.
+    deps.canonicalBotChat.lookup = { _, _ in
+      CanonicalBotChatLookup(sessions: [], includeHiddenSupported: true)
+    }
     // Keep the grouped Cron Jobs section frozen on the seeded jobs across polls.
     deps.hermesREST.cronJobs = { _, _ in seededCronJobs }
     // "notify" needs REAL notification permission (the panel captures a live banner from
