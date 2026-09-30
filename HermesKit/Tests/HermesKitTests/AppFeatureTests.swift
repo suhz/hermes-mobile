@@ -218,6 +218,65 @@ struct AppFeatureTests {
     }
   }
 
+  @Test func openingBotChatSeatsResumeUnderProfile() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+    let session = Session(id: "bot-arif", title: "Bot Chat")
+
+    await store.send(.home(.delegate(.openBotChat(session: session, profileName: "arif")))) {
+      $0.liveChat = ChatFeature.State(
+        connection: self.connection,
+        resumeStoredID: "bot-arif",
+        profileName: "arif",
+        title: "Bot Chat"
+      )
+      $0.path.append(ChatScreen.State(sessionKey: "bot-arif"))
+    }
+  }
+
+  @Test func openingDefaultBotOmitsProfileScope() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+    let session = Session(id: "bot-default", title: "Bot Chat")
+
+    await store.send(.home(.delegate(.openBotChat(session: session, profileName: "default")))) {
+      $0.liveChat = ChatFeature.State(
+        connection: self.connection,
+        resumeStoredID: "bot-default",
+        profileName: nil,
+        title: "Bot Chat"
+      )
+      $0.path.append(ChatScreen.State(sessionKey: "bot-default"))
+    }
+  }
+
+  @Test func mintingBotChatSeatsCanonicalCreate() async {
+    let store = TestStore(
+      initialState: AppFeature.State(home: SessionListFeature.State(connection: connection))
+    ) {
+      AppFeature()
+    }
+
+    await store.send(.home(.delegate(.mintBotChat(profileName: "arif")))) {
+      $0.liveChat = ChatFeature.State(
+        connection: self.connection,
+        profileName: "arif",
+        title: CanonicalBotChat.title,
+        canonicalCreateTitle: CanonicalBotChat.title,
+        createHidden: true,
+        sendCanonicalIntro: false
+      )
+      $0.path.append(ChatScreen.State(sessionKey: nil))
+    }
+    #expect(store.state.liveChat?.isDiscardableNewChat == false)
+  }
+
   @Test func creatingSessionUnderCustomProfilePassesProfileToChat() async {
     let store = TestStore(
       initialState: AppFeature.State(

@@ -585,6 +585,62 @@ public struct AppFeature {
         // as open — the replacement goes through the nil-out).
         return teardownSlot(thenFill: chat)
 
+      case let .home(.delegate(.openBotChat(session, profileName))):
+        guard let home = state.home else { return .none }
+        let profile = Self.scopedBotProfile(profileName)
+        let expectsApproval = state.pendingApprovalSessionIDs.contains(session.id)
+        state.pendingApprovalSessionIDs.remove(session.id)
+        let badge = setBadge(state)
+        if let chat = state.liveChat, chat.sessionKey == session.id {
+          if expectsApproval {
+            state.liveChat?.expectsPendingApproval = true
+          }
+          let read = acknowledgeRead(
+            &state,
+            sessionID: session.id,
+            connection: chat.connection,
+            profileName: profile
+          )
+          if state.isChatDetached {
+            state.path.append(ChatScreen.State(sessionKey: session.id))
+          }
+          return .merge(badge, read, .send(.liveChat(.reattached)))
+        }
+        var chat = ChatFeature.State(
+          connection: home.connection,
+          resumeStoredID: session.id,
+          profileName: profile,
+          title: session.resolvedTitle ?? CanonicalBotChat.title
+        )
+        let read = acknowledgeRead(
+          &state,
+          sessionID: session.id,
+          connection: home.connection,
+          profileName: profile
+        )
+        chat.expectsPendingApproval = expectsApproval
+        guard state.liveChat != nil else {
+          seatLiveChat(chat, into: &state)
+          return .merge(badge, read)
+        }
+        return .merge(badge, read, teardownSlot(thenFill: chat))
+
+      case let .home(.delegate(.mintBotChat(profileName))):
+        guard let home = state.home else { return .none }
+        let chat = ChatFeature.State(
+          connection: home.connection,
+          profileName: Self.scopedBotProfile(profileName),
+          title: CanonicalBotChat.title,
+          canonicalCreateTitle: CanonicalBotChat.title,
+          createHidden: true,
+          sendCanonicalIntro: false
+        )
+        guard state.liveChat != nil else {
+          seatLiveChat(chat, into: &state)
+          return .none
+        }
+        return teardownSlot(thenFill: chat)
+
       case let .fillLiveChat(chat):
         seatLiveChat(chat, into: &state)
         // The initial connect is the chat view's `.task` (first appearance). In compact the
@@ -1161,6 +1217,12 @@ public struct AppFeature {
     }
     // The replayed tap's `openSession` fills the slot (marker only in compact).
     return .send(.pushTapped(tap))
+  }
+
+  /// Profile name threaded into `ChatFeature` — `nil` for `"default"` so create/resume stay
+  /// byte-identical to single-profile agents (same rule as `SessionListFeature.scopedProfileName`).
+  private static func scopedBotProfile(_ name: String) -> String? {
+    name == SessionListFeature.State.defaultProfileName ? nil : name
   }
 
   /// A fresh new chat under the list's connection and currently-selected profile — the ONE

@@ -697,6 +697,137 @@ struct ChatReductionTests {
     await store.send(.teardown)
   }
 
+  @Test func canonicalBotChatCreateSendsTitleAndHidden() async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    let store = TestStore(
+      initialState: ChatFeature.State(
+        connection: conn,
+        title: CanonicalBotChat.title,
+        canonicalCreateTitle: CanonicalBotChat.title,
+        createHidden: true
+      )
+    ) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ImmediateClock()
+      $0.hermesGateway.connect = { @Sendable _, _ in AsyncStream { $0.yield(.ready) } }
+      $0.hermesGateway.send = { @Sendable method, params in
+        if method != "commands.catalog" {
+          sent.setValue(.object(["method": .string(method), "params": params]))
+        }
+        return .object([
+          "session_id": .string("live-bot"),
+          "stored_session_id": .string("stored-bot"),
+          "message_count": .number(0),
+        ])
+      }
+    }
+
+    await store.send(.task) {
+      $0.hasStarted = true
+    }
+    await store.receive(\.gatewayEvent) {
+      $0.status = .ready
+      $0.hasRequestedSession = true
+    }
+    await store.receive(\.sessionResult.success) {
+      $0.liveSessionID = "live-bot"
+      $0.storedSessionID = "stored-bot"
+      $0.status = .ready
+      $0.hasHydrated = true
+    }
+    #expect(sent.value?["method"]?.stringValue == "session.create")
+    #expect(sent.value?["params"]?["title"] == .string("Bot Chat"))
+    #expect(sent.value?["params"]?["hidden"] == .bool(true))
+    #expect(!store.state.isDiscardableNewChat)
+    await store.send(.teardown)
+  }
+
+  @Test func canonicalMintRetriesCreateWithoutHidden() async {
+    let sent = LockIsolated<JSONValue?>(nil)
+    var state = ChatFeature.State(
+      connection: conn,
+      title: CanonicalBotChat.title,
+      canonicalCreateTitle: CanonicalBotChat.title,
+      createHidden: true
+    )
+    state.hasStarted = true
+    state.hasRequestedSession = true
+    state.status = .ready
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ImmediateClock()
+      $0.hermesGateway.send = { @Sendable method, params in
+        if method != "commands.catalog" {
+          sent.setValue(.object(["method": .string(method), "params": params]))
+        }
+        return .object([
+          "session_id": .string("live-bot"),
+          "stored_session_id": .string("stored-bot"),
+          "message_count": .number(0),
+        ])
+      }
+    }
+
+    await store.send(.sessionResult(.failure(.server("unexpected keyword argument 'hidden'")))) {
+      $0.createHidden = false
+    }
+    await store.receive(\.sessionResult.success) {
+      $0.liveSessionID = "live-bot"
+      $0.storedSessionID = "stored-bot"
+      $0.hasHydrated = true
+    }
+    #expect(sent.value?["method"]?.stringValue == "session.create")
+    #expect(sent.value?["params"]?["title"] == .string("Bot Chat"))
+    #expect(sent.value?["params"]?["hidden"] == nil)
+    await store.send(.teardown)
+  }
+
+  @Test func canonicalMintNeverSendsIntroAfterCreate() async {
+    var state = ChatFeature.State(
+      connection: conn,
+      title: CanonicalBotChat.title,
+      canonicalCreateTitle: CanonicalBotChat.title,
+      createHidden: true,
+      sendCanonicalIntro: true
+    )
+    state.hasStarted = true
+    state.hasRequestedSession = true
+    state.status = .ready
+    let store = TestStore(initialState: state) {
+      ChatFeature()
+    } withDependencies: {
+      $0.uuid = .incrementing
+      $0.continuousClock = ImmediateClock()
+      $0.date = .constant(Date(timeIntervalSince1970: 0))
+      $0.chatSnapshot = .inMemory()
+      $0.hermesGateway.send = { @Sendable method, _ in
+        #expect(method != "prompt.submit", "Bot Chat mint must not kick off an intro turn")
+        return .object([
+          "session_id": .string("live-bot"),
+          "stored_session_id": .string("stored-bot"),
+          "message_count": .number(0),
+          "commands": .array([]),
+        ])
+      }
+    }
+    store.exhaustivity = .off
+
+    await store.send(.sessionResult(.success(.init(
+      sessionID: "live-bot", storedSessionID: "stored-bot", messageCount: 0
+    )))) {
+      $0.liveSessionID = "live-bot"
+      $0.storedSessionID = "stored-bot"
+      $0.hasHydrated = true
+      $0.pendingCanonicalIntro = false
+    }
+    #expect(store.state.composerText.isEmpty)
+    #expect(!store.state.composerText.contains(CanonicalBotChat.introPrompt))
+  }
+
   @Test func createUnderCustomProfileThreadsProfileParam() async {
     let sent = LockIsolated<JSONValue?>(nil)
     let store = TestStore(
@@ -2550,6 +2681,13 @@ struct ChatReductionTests {
 
     let resumed = ChatFeature.State(connection: conn, resumeStoredID: "20260610_abc")
     #expect(!resumed.isDiscardableNewChat)
+
+    let botMint = ChatFeature.State(
+      connection: conn,
+      canonicalCreateTitle: CanonicalBotChat.title
+    )
+    #expect(!botMint.isDiscardableNewChat)
+    #expect(!botMint.isPristineNewChat)
   }
 
   // MARK: In-flight composer input (#80 — what a draft reset cannot reach)

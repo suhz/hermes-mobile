@@ -17,8 +17,18 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
   public var skillCount: Int
   /// Whether the profile has an `.env` (env overrides) configured.
   public var hasEnv: Bool
+  /// Optional display title from `GET /api/profiles` (`display_name`). Roster-only.
+  public var displayName: String?
+  /// Optional one-line description from the same payload.
+  public var description: String?
+  /// When `true`, the agent injects teammate-messaging protocol into Bot Chat itself.
+  /// Clients must not append that protocol text to SOUL.md on create.
+  public var botModeProtocol: Bool
 
   public var id: String { name }
+
+  /// Roster title: `display_name` when present, else the profile `name`.
+  public var rosterTitle: String { displayName?.trimmedNonEmpty ?? name }
 
   enum CodingKeys: String, CodingKey {
     case name
@@ -27,6 +37,9 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     case provider
     case skillCount = "skill_count"
     case hasEnv = "has_env"
+    case displayName = "display_name"
+    case description
+    case botModeProtocol = "bot_mode_protocol"
   }
 
   public init(
@@ -35,7 +48,10 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     model: String? = nil,
     provider: String? = nil,
     skillCount: Int = 0,
-    hasEnv: Bool = false
+    hasEnv: Bool = false,
+    displayName: String? = nil,
+    description: String? = nil,
+    botModeProtocol: Bool = false
   ) {
     self.name = name
     self.isDefault = isDefault
@@ -43,6 +59,9 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     self.provider = provider
     self.skillCount = skillCount
     self.hasEnv = hasEnv
+    self.displayName = displayName
+    self.description = description
+    self.botModeProtocol = botModeProtocol
   }
 
   public init(from decoder: Decoder) throws {
@@ -53,5 +72,8 @@ public struct Profile: Equatable, Sendable, Identifiable, Decodable {
     provider = try? c.decodeIfPresent(String.self, forKey: .provider)
     skillCount = (try? c.decodeIfPresent(Int.self, forKey: .skillCount)) ?? 0
     hasEnv = (try? c.decodeIfPresent(Bool.self, forKey: .hasEnv)) ?? false
+    displayName = try? c.decodeIfPresent(String.self, forKey: .displayName)
+    description = try? c.decodeIfPresent(String.self, forKey: .description)
+    botModeProtocol = (try? c.decodeIfPresent(Bool.self, forKey: .botModeProtocol)) ?? false
   }
 }
